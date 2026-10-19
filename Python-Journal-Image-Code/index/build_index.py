@@ -1,9 +1,9 @@
 """Embed chunks_<version>.jsonl locally via Ollama -> ChromaDB collection (+ index manifest).
 
-    python build_index.py --dry-run                  # verify hash, print stats, embed nothing
-    python build_index.py                            # builds chroma_db/ collection nomic-embed-text_chunks_v1
-    python build_index.py --rebuild                  # drop and recreate the collection
-    python build_index.py --model bge-m3 --doc-prefix "" --query-prefix ""   # a variant to compare on the eval set
+    python index/build_index.py --dry-run                  # verify hash, print stats, embed nothing
+    python index/build_index.py                            # builds chroma_db/ collection nomic-embed-text_chunks_v1
+    python index/build_index.py --rebuild                  # drop and recreate the collection
+    python index/build_index.py --model bge-m3 --doc-prefix "" --query-prefix ""   # a variant to compare on the eval set
 
 Everything stays on this machine: embeddings come from the local Ollama server, vectors go to the gitignored chroma_db/.
 The vectors are journal content (they can be partly inverted to text), so treat chroma_db/ like the corpus.
@@ -18,7 +18,7 @@ import chromadb
 import ollama
 
 # Paths are relative to this file, so the script works from any working directory
-REPO = Path(__file__).parent.parent
+REPO = Path(__file__).parent.parent.parent
 CORPUS = REPO / "Journal-Entires" / "corpus"
 CHROMA_DIR = REPO / "chroma_db"  # gitignored
 

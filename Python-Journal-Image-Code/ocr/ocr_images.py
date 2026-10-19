@@ -1,7 +1,7 @@
 """OCR all journal images via local Ollama -> append-only JSONL corpus.
 
-    python ocr_images.py --limit 5   # smoke test
-    python ocr_images.py             # full run; Ctrl-C and re-run resumes
+    python ocr/ocr_images.py --limit 5   # smoke test
+    python ocr/ocr_images.py             # full run; Ctrl-C and re-run resumes
 """
 import argparse
 import hashlib
@@ -13,7 +13,7 @@ from pathlib import Path
 import ollama
 
 # Paths are relative to this file, so the script works from any working directory
-ROOT = Path(__file__).parent.parent / "Journal-Entires"
+ROOT = Path(__file__).parent.parent.parent / "Journal-Entires"
 IMAGES_DIR = ROOT / "journal_images"
 OUTPUT_PATH = ROOT / "corpus" / "ocr_v1.jsonl"  # bump the version if model/prompt/options change; *.jsonl is gitignored
 

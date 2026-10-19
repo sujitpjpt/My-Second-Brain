@@ -1,6 +1,6 @@
 """Run the same test images through several local vision models, one folder of .txt output per model.
 
-    python ocr_compare_models.py
+    python ocr/ocr_compare_models.py
 
 For comparing candidates by eye / against hand-checked text before choosing a model; the real corpus comes from
 ocr_images.py. Output contains journal text, so it stays in the gitignored Journal-Entires/ folder.
@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 MODELS = ["qwen2.5vl:7b", "minicpm-v:8b"]  # candidates to compare; each must already be pulled in Ollama
-IMAGES_DIR = Path(__file__).parent.parent / "Journal-Entires" / "test_journal_images"  # small hand-picked sample
-OUTPUT_DIR = Path(__file__).parent.parent / "Journal-Entires" / "ocr_test_output"  # one subfolder per model
+IMAGES_DIR = Path(__file__).parent.parent.parent / "Journal-Entires" / "test_journal_images"  # small hand-picked sample
+OUTPUT_DIR = Path(__file__).parent.parent.parent / "Journal-Entires" / "ocr_test_output"  # one subfolder per model
 
 # Same prompt as ocr_images.py, so the comparison reflects the real run
 PROMPT = (

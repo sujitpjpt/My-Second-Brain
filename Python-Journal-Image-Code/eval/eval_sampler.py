@@ -3,13 +3,13 @@
 Run in YOUR terminal only: it prints journal text. Output must not go through any
 tool/agent/API. Eval file lives under Journal-Entires/ (gitignored).
 
-  python eval_sampler.py                # = --draft 40 (local LLM drafts; you keep/edit/drop)
-  python eval_sampler.py --manual       # random entries, you write every question
-  python eval_sampler.py --grep term    # list entries containing a term (for multi-entry questions)
-  python eval_sampler.py --show ID ...  # print specific entries
-  python eval_sampler.py --stats        # counts per question type
-  python eval_sampler.py --add          # write a question + list its entry_ids yourself (multi/date); no random seed entry
-  python eval_sampler.py --draft 40     # local LLM drafts questions; you keep/edit/drop
+  python eval/eval_sampler.py                # = --draft 40 (local LLM drafts; you keep/edit/drop)
+  python eval/eval_sampler.py --manual       # random entries, you write every question
+  python eval/eval_sampler.py --grep term    # list entries containing a term (for multi-entry questions)
+  python eval/eval_sampler.py --show ID ...  # print specific entries
+  python eval/eval_sampler.py --stats        # counts per question type
+  python eval/eval_sampler.py --add          # write a question + list its entry_ids yourself (multi/date); no random seed entry
+  python eval/eval_sampler.py --draft 40     # local LLM drafts questions; you keep/edit/drop
 
 --draft talks only to the local Ollama server (localhost). Nothing leaves the machine.
 """
@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 ENTRIES = ROOT / "Journal-Entires" / "corpus" / "entries_v1.jsonl"  # input: one record per entry (build_entries.py)
 EVAL = ROOT / "Journal-Entires" / "eval" / "retrieval_v1.jsonl"  # output: append-only, one question per line
 

@@ -1,6 +1,6 @@
 """Group per-photo OCR records into one record per journal entry -> entries_v1.jsonl.
 
-    python build_entries.py
+    python corpus/build_entries.py
 """
 import json
 import re
@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # Paths are relative to this file, so the script works from any working directory
-ROOT = Path(__file__).parent.parent / "Journal-Entires"
+ROOT = Path(__file__).parent.parent.parent / "Journal-Entires"
 CORPUS = ROOT / "corpus" / "ocr_v1.jsonl"
 MANIFEST = ROOT / "corpus" / "manifest_v1.json"
 OUTPUT = ROOT / "corpus" / "entries_v1.jsonl"  # gitignored via *.jsonl

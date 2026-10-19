@@ -1,13 +1,13 @@
 """Convert every non-JPG image in journal_images/ to JPG (macOS sips, local), then delete the original.
 
-    python convert_to_jpg.py --dry-run   # list what would happen, change nothing
-    python convert_to_jpg.py             # convert; each original is deleted only after its JPG is verified
+    python extract/convert_to_jpg.py --dry-run   # list what would happen, change nothing
+    python extract/convert_to_jpg.py             # convert; each original is deleted only after its JPG is verified
 """
 import argparse
 import subprocess
 from pathlib import Path
 
-IMAGES_DIR = Path(__file__).parent.parent / "Journal-Entires" / "journal_images"
+IMAGES_DIR = Path(__file__).parent.parent.parent / "Journal-Entires" / "journal_images"
 JPG_EXTS = {".jpg"}  # already the target format: left alone
 CONVERT_EXTS = {".png", ".heic", ".heif", ".jpeg", ".gif", ".webp", ".tiff", ".bmp"}  # sips can read these; anything else is skipped
 JPG_QUALITY = "95"  # high, because OCR reads fine strokes and JPEG is lossy

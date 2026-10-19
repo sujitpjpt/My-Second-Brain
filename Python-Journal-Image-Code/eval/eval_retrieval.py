@@ -1,7 +1,7 @@
 """Baseline retrieval eval: recall@k, hit@k and MRR for a Chroma collection against the frozen eval set.
 
-    python eval_retrieval.py                                      # default collection nomic-embed-text_chunks_v1
-    python eval_retrieval.py --collection bge-m3_chunks_v1        # compare a variant (prefixes come from its manifest)
+    python eval/eval_retrieval.py                                      # default collection nomic-embed-text_chunks_v1
+    python eval/eval_retrieval.py --collection bge-m3_chunks_v1        # compare a variant (prefixes come from its manifest)
 
 Retrieval only: no generator and no LLM judge, so the run is deterministic and needs no model but the embedder.
 Everything is local (Ollama on localhost + chroma_db/). Terminal output has ids, ranks and numbers, never journal text.
@@ -18,7 +18,7 @@ from pathlib import Path
 import chromadb
 import ollama
 
-REPO = Path(__file__).parent.parent
+REPO = Path(__file__).parent.parent.parent
 CORPUS = REPO / "Journal-Entires" / "corpus"
 EVAL_DIR = REPO / "Journal-Entires" / "eval"
 CHROMA_DIR = REPO / "chroma_db"

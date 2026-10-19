@@ -1,8 +1,8 @@
 """Chunk entries_v1.jsonl -> chunks_<version>.jsonl (+ manifest). One chunk per entry unless the entry is long.
 
-    python build_chunks.py --dry-run                 # print stats only, write nothing
-    python build_chunks.py                           # writes chunks_v1.jsonl, read-only
-    python build_chunks.py --version v2 --chunk-chars 600   # a variant to compare against v1 with the eval set
+    python corpus/build_chunks.py --dry-run                 # print stats only, write nothing
+    python corpus/build_chunks.py                           # writes chunks_v1.jsonl, read-only
+    python corpus/build_chunks.py --version v2 --chunk-chars 600   # a variant to compare against v1 with the eval set
 
 Entries longer than --split-above are cut at paragraph, then sentence, then word boundaries into
 roughly equal pieces, each (except the first) starting with the tail of the previous piece (overlap).
@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 # Paths are relative to this file, so the script works from any working directory
-ROOT = Path(__file__).parent.parent / "Journal-Entires" / "corpus"
+ROOT = Path(__file__).parent.parent.parent / "Journal-Entires" / "corpus"
 ENTRIES = ROOT / "entries_v1.jsonl"  # gitignored via *.jsonl
 
 # Sentence boundary: whitespace after . ! or ? (lookbehind keeps the punctuation with its sentence).

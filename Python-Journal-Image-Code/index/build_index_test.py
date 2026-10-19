@@ -1,6 +1,6 @@
 """Dump what every `batch` in build_index.py contains, to one file. No Ollama, no ChromaDB, nothing is embedded or indexed.
 
-    python build_index_test.py                    # all batches -> Journal-Entires/corpus/batch_debug_v1.json
+    python index/build_index_test.py                    # all batches -> Journal-Entires/corpus/batch_debug_v1.json
 
 The output has journal text in it, so it lives in the gitignored corpus folder. Treat it like the corpus.
 """
@@ -8,7 +8,7 @@ import argparse
 import json
 from pathlib import Path
 
-REPO = Path(__file__).parent.parent
+REPO = Path(__file__).parent.parent.parent
 CORPUS = REPO / "Journal-Entires" / "corpus"
 
 

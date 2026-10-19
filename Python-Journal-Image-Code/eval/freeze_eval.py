@@ -1,6 +1,6 @@
 """Freeze the retrieval eval set: validate, write a manifest (hash + corpus link), make the file read-only.
 
-    python freeze_eval.py
+    python eval/freeze_eval.py
 """
 import hashlib
 import json
@@ -9,7 +9,7 @@ import stat
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent / "Journal-Entires"
+ROOT = Path(__file__).parent.parent.parent / "Journal-Entires"
 EVAL = ROOT / "eval" / "retrieval_v1.jsonl"
 MANIFEST = ROOT / "eval" / "retrieval_v1_manifest.json"
 ENTRIES = ROOT / "corpus" / "entries_v1.jsonl"

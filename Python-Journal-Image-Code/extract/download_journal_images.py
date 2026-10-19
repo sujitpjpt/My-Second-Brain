@@ -1,7 +1,7 @@
 """Download the images attached to Notion journal pages -> journal_images/<date>_<title>_<n>.<ext>.
 
     export NOTION_API_TOKEN=... NOTION_DATABASE_ID=...
-    python download_journal_images.py --start 2026-01-01 --end 2026-03-31
+    python extract/download_journal_images.py --start 2026-01-01 --end 2026-03-31
 
 Safe to re-run: images already on disk, and images I moved into rejected_journal_images/, are skipped.
 """
@@ -19,8 +19,8 @@ DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 # Paths are relative to this file, so the script works from any working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "Journal-Entires", "journal_images")
-REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "Journal-Entires", "rejected_journal_images")  # hand-rejected non-journal photos
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "..", "Journal-Entires", "journal_images")
+REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "..", "Journal-Entires", "rejected_journal_images")  # hand-rejected non-journal photos
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",

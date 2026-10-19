@@ -1,6 +1,6 @@
 """Freeze the OCR corpus: write a manifest (hash + model digest) and make the file read-only.
 
-    python freeze_corpus.py
+    python corpus/freeze_corpus.py
 """
 import hashlib
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 import ollama
 
 # Paths are relative to this file, so the script works from any working directory
-ROOT = Path(__file__).parent.parent / "Journal-Entires"
+ROOT = Path(__file__).parent.parent.parent / "Journal-Entires"
 CORPUS = ROOT / "corpus" / "ocr_v1.jsonl"
 MANIFEST = ROOT / "corpus" / "manifest_v1.json"  # one manifest per corpus version
 IMAGES_DIR = ROOT / "journal_images"
