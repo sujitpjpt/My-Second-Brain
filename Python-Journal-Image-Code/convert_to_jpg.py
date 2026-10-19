@@ -8,8 +8,8 @@ import subprocess
 from pathlib import Path
 
 IMAGES_DIR = Path(__file__).parent.parent / "Journal-Entires" / "journal_images"
-JPG_EXTS = {".jpg"}
-CONVERT_EXTS = {".png", ".heic", ".heif", ".jpeg", ".gif", ".webp", ".tiff", ".bmp"}
+JPG_EXTS = {".jpg"}  # already the target format: left alone
+CONVERT_EXTS = {".png", ".heic", ".heif", ".jpeg", ".gif", ".webp", ".tiff", ".bmp"}  # sips can read these; anything else is skipped
 JPG_QUALITY = "95"  # high, because OCR reads fine strokes and JPEG is lossy
 
 
@@ -20,6 +20,7 @@ def dimensions(path):
     )
     if out.returncode != 0:
         return None
+    # sips prints "  pixelWidth: 4032" lines; parse "key: value" pairs and ignore the filename line
     vals = {ln.split(":")[0].strip(): ln.split(":")[1].strip() for ln in out.stdout.splitlines() if ":" in ln}
     try:
         return int(vals["pixelWidth"]), int(vals["pixelHeight"])
@@ -43,7 +44,7 @@ def main():
 
     converted = failed = 0
     for src in (p for p in files if p.suffix.lower() in CONVERT_EXTS):
-        dst = src.with_suffix(".jpg")
+        dst = src.with_suffix(".jpg")  # same stem, so the filename keeps matching the Notion date_title_N pattern
         if dst.exists():
             # never overwrite: two files for the same photo needs a human decision
             print(f"SKIP (target exists): {src.name}")
@@ -58,6 +59,7 @@ def main():
             capture_output=True,
         )
         # Verify before deleting: file exists, is non-empty, and has the same pixel size as the original
+        # (chained comparison: dims(dst) == dims(src) AND dims(src) is not None, so an unreadable original never passes)
         ok = dst.exists() and dst.stat().st_size > 0 and dimensions(dst) == dimensions(src) is not None
         if not ok:
             print(f"FAILED (original kept): {src.name}")

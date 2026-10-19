@@ -13,6 +13,7 @@ CORPUS = REPO / "Journal-Entires" / "corpus"
 
 
 def main():
+    # These three mirror build_index.py's flags and defaults; pass the same values to see the same batches
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="v1")
     ap.add_argument("--doc-prefix", default="search_document: ")

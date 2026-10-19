@@ -23,12 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ENTRIES = ROOT / "Journal-Entires" / "corpus" / "entries_v1.jsonl"
-EVAL = ROOT / "Journal-Entires" / "eval" / "retrieval_v1.jsonl"
+ENTRIES = ROOT / "Journal-Entires" / "corpus" / "entries_v1.jsonl"  # input: one record per entry (build_entries.py)
+EVAL = ROOT / "Journal-Entires" / "eval" / "retrieval_v1.jsonl"  # output: append-only, one question per line
 
 OLLAMA_URL = "http://localhost:11434/api/chat"  # local only; never change to a remote host
-DRAFT_MODEL = "qwen2.5vl:7b"
+DRAFT_MODEL = "qwen2.5vl:7b"  # already pulled for OCR, so no extra download; any local chat model works via --model
 MAX_CHARS = 12000  # keep entry inside num_ctx
+# The "paraphrase, never reuse 4+ word phrases" rule matches shares_phrase() below, which flags violations after the fact
 DRAFT_PROMPT = """You help build a retrieval test for a personal journal search tool.
 Read the journal entry and write 2 questions the author might later ask that THIS entry answers.
 Rules: first-person ("when did I...", "what was I worried about..."); paraphrase, never reuse
@@ -48,11 +49,13 @@ Writing good questions:
 
 
 def load_entries():
+    """All entries keyed by entry_id."""
     with ENTRIES.open() as f:
         return {e["entry_id"]: e for e in map(json.loads, f)}
 
 
 def load_eval():
+    """Questions saved so far; empty list if the eval file doesn't exist yet."""
     if not EVAL.exists():
         return []
     with EVAL.open() as f:
@@ -60,19 +63,23 @@ def load_eval():
 
 
 def show(e):
+    """Print one entry's full text, framed. This is journal content: terminal only."""
     print(f"\n{'=' * 70}\n{e['entry_id']}  ({e['date']})  pages={e['n_pages']}\n{'-' * 70}\n{e['text']}\n{'=' * 70}")
 
 
 def append(rec):
+    """Add one JSON line to the eval file, creating the folder on first use."""
     EVAL.parent.mkdir(parents=True, exist_ok=True)
     with EVAL.open("a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def save(question, ids, qtype, source, model=None):
-    n = len(load_eval()) + 1
+    """Save one eval record. `relevant` lists every entry_id that answers the question (recall is scored against it)."""
+    n = len(load_eval()) + 1  # qid = next sequence number; the file is append-only so ids never shift
     append({
         "qid": f"q{n:03d}", "question": question, "relevant": ids, "type": qtype,
+        # source records provenance: hand / llm-draft / llm-draft-edited, so LLM-written questions can be audited later
         "source": source, "draft_model": model,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
@@ -80,11 +87,14 @@ def save(question, ids, qtype, source, model=None):
 
 
 def draft_questions(text, model):
+    """Ask the local model for candidate questions about one entry. Returns [] if the reply isn't usable."""
     body = {
         "model": model, "stream": False,
         "messages": [{"role": "user", "content": DRAFT_PROMPT + text[:MAX_CHARS]}],
+        # Structured output: Ollama constrains the reply to this JSON schema, so parsing rarely fails
         "format": {"type": "object", "required": ["questions"],
                    "properties": {"questions": {"type": "array", "items": {"type": "string"}}}},
+        # temperature 0.7 for varied questions (unlike OCR, which wants determinism); fixed seed keeps a re-run reproducible
         "options": {"temperature": 0.7, "seed": 42, "num_ctx": 8192},
     }
     req = urllib.request.Request(OLLAMA_URL, json.dumps(body).encode(),
@@ -100,17 +110,19 @@ def draft_questions(text, model):
 
 def shares_phrase(question, text, n=4):
     """True if question copies an n-word run from the entry (tests keywords, not retrieval)."""
-    words = lambda s: re.findall(r"\w+", s.lower())
+    words = lambda s: re.findall(r"\w+", s.lower())  # lowercase, punctuation stripped, so only the words are compared
     qw, tw = words(question), words(text)
+    # All n-word windows of the entry as a set, then check each n-word window of the question against it
     grams = {tuple(tw[i:i + n]) for i in range(len(tw) - n + 1)}
     return any(tuple(qw[i:i + n]) in grams for i in range(len(qw) - n + 1))
 
 
-
 def draft_mode(entries, limit, model, seed):
+    """Default flow: show an entry, show LLM-drafted questions, and let me keep, rewrite, drop or replace them."""
+    # Entries already cited by a saved question are skipped, so repeat runs cover new ground
     used = {i for r in load_eval() for i in r["relevant"]}
     pool = [i for i in entries if i not in used]
-    random.Random(seed + len(used)).shuffle(pool)
+    random.Random(seed + len(used)).shuffle(pool)  # same seed + same saved set = same order; saving a question reshuffles
     for eid in pool[:limit]:
         e = entries[eid]
         print(f"\ndrafting for {eid} …")
@@ -119,13 +131,14 @@ def draft_mode(entries, limit, model, seed):
         except OSError as err:
             sys.exit(f"Ollama not reachable at {OLLAMA_URL}: {err}")
         show(e)
+        # Flag drafts that copy wording from the entry: they'd test keyword match rather than retrieval
         for i, q in enumerate(drafts, 1):
             flag = "  (!) copies a phrase from the entry" if shares_phrase(q, e["text"]) else ""
             print(f"  [{i}] {q}{flag}")
         choice = input("keep which (e.g. 1 2), w=write own, blank=skip, q=quit: ").strip().lower()
         if choice == "q":
             break
-        for tok in choice.split():
+        for tok in choice.split():  # input like "1 2 w": keep drafts 1 and 2, then write one of my own
             if tok == "w":
                 q = input("your question: ").strip()
                 if q:
@@ -136,7 +149,7 @@ def draft_mode(entries, limit, model, seed):
                 final = input("  Enter=keep as is, or type a rewrite (x=drop): ").strip()
                 if final.lower() == "x":
                     continue
-                final = final or orig
+                final = final or orig  # blank input keeps the draft as is
                 save(final, [eid], "single",
                      "llm-draft" if final == orig else "llm-draft-edited", model)
 
@@ -150,11 +163,12 @@ def ask_question(entries, seed_id=None):
         return True
     extra = input(f"Relevant entry_ids{f' besides {seed_id}' if seed_id else ''} (comma-sep, blank=none): ")
     ids = ([seed_id] if seed_id else []) + [i.strip() for i in extra.split(",") if i.strip()]
-    bad = [i for i in ids if i not in entries]
+    bad = [i for i in ids if i not in entries]  # a typo'd id would silently make the question unanswerable
     if bad:
         print(f"  unknown entry_id(s) {bad}; not saved")
         return True
     qtype = input("Type [s]ingle / [d]ate / [m]ulti (default by count): ").strip().lower()
+    # Unrecognised input falls back to the count of relevant entries: one id = single, several = multi
     qtype = {"s": "single", "d": "date", "m": "multi"}.get(qtype, "single" if len(ids) == 1 else "multi")
     save(q, ids, qtype, "hand")
     return True
@@ -172,6 +186,7 @@ def main():
     args = ap.parse_args()
     entries = load_entries()
 
+    # Modes are checked in order: --stats, then draft (the default), then the --manual helpers (--grep, --show, free sampling)
     if args.stats:
         recs = load_eval()
         print(len(recs), "questions", dict(Counter(r["type"] for r in recs)),
@@ -185,7 +200,7 @@ def main():
         t = args.grep.lower()
         hits = [e for e in entries.values() if t in e["text"].lower()]
         for e in sorted(hits, key=lambda e: e["date"]):
-            i = e["text"].lower().index(t)
+            i = e["text"].lower().index(t)  # first occurrence, to center the snippet on it
             snippet = e["text"][max(0, i - 40): i + 60].replace("\n", " ")
             print(f"{e['entry_id']:40} …{snippet}…")
         print(f"\n{len(hits)} entries")

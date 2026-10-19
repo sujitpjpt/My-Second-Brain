@@ -1,19 +1,27 @@
+"""Run the same test images through several local vision models, one folder of .txt output per model.
+
+    python ocr_compare_models.py
+
+For comparing candidates by eye / against hand-checked text before choosing a model; the real corpus comes from
+ocr_images.py. Output contains journal text, so it stays in the gitignored Journal-Entires/ folder.
+"""
 import ollama
 import time
 from pathlib import Path
 
-MODELS = ["qwen2.5vl:7b", "minicpm-v:8b"]
-IMAGES_DIR = Path(__file__).parent.parent / "Journal-Entires" / "test_journal_images"
-OUTPUT_DIR = Path(__file__).parent.parent / "Journal-Entires" / "ocr_test_output"
+MODELS = ["qwen2.5vl:7b", "minicpm-v:8b"]  # candidates to compare; each must already be pulled in Ollama
+IMAGES_DIR = Path(__file__).parent.parent / "Journal-Entires" / "test_journal_images"  # small hand-picked sample
+OUTPUT_DIR = Path(__file__).parent.parent / "Journal-Entires" / "ocr_test_output"  # one subfolder per model
 
+# Same prompt as ocr_images.py, so the comparison reflects the real run
 PROMPT = (
     "Transcribe all handwritten text in this image exactly as written, "
     "preserving line breaks. Output only the transcription, no commentary."
 )
 
 
-NUM_CTX = 8192
-NUM_PREDICT = 2048
+NUM_CTX = 8192  # total token window: image + prompt + response
+NUM_PREDICT = 2048  # cap on response tokens only
 REPEAT_PENALTY = 1.15  # >1 discourages loops; Ollama default is ~1.1, keep it small (strong values corrupt real repeats)
 REPEAT_LAST_N = 256    # tokens of history the penalty looks at
 
@@ -52,17 +60,19 @@ def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     images = sorted(IMAGES_DIR.glob("*.jpg"))
     if not images:
+        # an empty glob would otherwise do nothing and look like success
         raise FileNotFoundError(f"No .jpg files found in {IMAGES_DIR.resolve()}")
 
     for model in MODELS:
-        model_dir = OUTPUT_DIR / model.replace(":", "_")
+        model_dir = OUTPUT_DIR / model.replace(":", "_")  # ":" is awkward in folder names: qwen2.5vl_7b
         model_dir.mkdir(exist_ok=True)
         print(f"\n=== {model} ===")
         results = []  # (elapsed, flags) per image
 
         for image_path in images:
             print(f"processing... {image_path.name}")
-            start = time.monotonic()
+            start = time.monotonic()  # monotonic clock: unaffected by system time changes
+            # Local Ollama call; nothing leaves the machine. Unlike ocr_images.py, no temperature/seed is set here
             response = ollama.generate(
                 model=model,
                 prompt=PROMPT,
@@ -86,6 +96,7 @@ def main():
             eval_count = response.get("eval_count")
             prompt_eval_count = response.get("prompt_eval_count")
             flags = check_output(response, text)
+            # Per-image summary: every raised flag in brackets, or [OK] when clean
             flag = " " + " ".join(f"[{f}]" for f in flags) if flags else " [OK]"
             results.append((elapsed, flags))
 
@@ -95,6 +106,7 @@ def main():
                 f"response_tokens={eval_count}, chars={len(text)}){flag}"
             )
 
+        # Per-model summary: images with no flags, and mean seconds per image
         clean = sum(1 for _, f in results if not f)
         avg = sum(t for t, _ in results) / len(results)
         print(f"--- {model}: {clean}/{len(results)} clean, avg {avg:.1f}s/image")

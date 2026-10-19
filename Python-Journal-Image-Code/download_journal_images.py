@@ -1,3 +1,10 @@
+"""Download the images attached to Notion journal pages -> journal_images/<date>_<title>_<n>.<ext>.
+
+    export NOTION_API_TOKEN=... NOTION_DATABASE_ID=...
+    python download_journal_images.py --start 2026-01-01 --end 2026-03-31
+
+Safe to re-run: images already on disk, and images I moved into rejected_journal_images/, are skipped.
+"""
 import argparse
 import os
 import re
@@ -6,17 +13,18 @@ from datetime import datetime
 
 import requests
 
+# Read from the environment (never hardcoded); a missing variable raises KeyError immediately
 NOTION_TOKEN = os.environ["NOTION_API_TOKEN"]
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
+# Paths are relative to this file, so the script works from any working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "Journal-Entires", "journal_images")
-
-REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "Journal-Entires", "rejected_journal_images")
+REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "Journal-Entires", "rejected_journal_images")  # hand-rejected non-journal photos
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
-    "Notion-Version": "2022-06-28",
+    "Notion-Version": "2022-06-28",  # pinned API version, so Notion changes can't alter response shapes under us
     "Content-Type": "application/json",
 }
 
@@ -52,12 +60,14 @@ def in_range(date_str, start, end):
 
 
 def slugify(text, max_len=50):
+    """Page title -> filename-safe slug: punctuation dropped, spaces/underscores become hyphens, capped at max_len."""
     text = re.sub(r"[^\w\s-]", "", text or "")
-    text = re.sub(r"[\s_]+", "-", text.strip())
+    text = re.sub(r"[\s_]+", "-", text.strip())  # "_" is the filename field separator, so it can't appear inside a title
     return text[:max_len]
 
 
 def get_all_pages():
+    """Every page in the database. Notion returns at most 100 per call, so follow the cursor until has_more is false."""
     pages = []
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     payload = {"page_size": 100}
@@ -74,6 +84,8 @@ def get_all_pages():
 
 
 def get_page_image_urls(page_id):
+    """Image URLs for one page, in block order (so _1, _2, ... follow page order). Paginated like get_all_pages."""
+    # Notion-hosted ("file") URLs are signed and expire after about an hour, so download right after fetching them
     urls = []
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
     params = {"page_size": 100}
@@ -95,6 +107,7 @@ def get_page_image_urls(page_id):
 
 
 def extract_page_meta(page):
+    """(date, title) of a page. Property names vary by database, so match by property type instead of name."""
     props = page.get("properties", {})
 
     # Date property
@@ -102,7 +115,7 @@ def extract_page_meta(page):
     for key in props:
         p = props[key]
         if p["type"] == "date" and p.get("date"):
-            date_str = p["date"]["start"][:10]
+            date_str = p["date"]["start"][:10]  # "start" may include a time; keep YYYY-MM-DD only
             break
 
     # Name/title property
@@ -119,8 +132,10 @@ def extract_page_meta(page):
 
 
 def download_image(url, filepath):
-    resp = requests.get(url, stream=True, timeout=30)
+    """Save the image at url; filepath has no extension. Returns the final path with the extension added."""
+    resp = requests.get(url, stream=True, timeout=30)  # stream so large photos aren't held in memory whole
     resp.raise_for_status()
+    # Pick the extension from the Content-Type header first, then fall back to the URL, then to .jpg
     content_type = resp.headers.get("Content-Type", "")
     ext = None
     if "jpeg" in content_type or "jpg" in content_type:
@@ -146,7 +161,7 @@ def download_image(url, filepath):
         else:
             filepath = filepath + ".jpg"
 
-    with open(filepath, "wb") as f:
+    with open(filepath, "wb") as f:  # write in 8 KB chunks as they arrive
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
     return filepath
@@ -168,6 +183,7 @@ def main():
     pages = get_all_pages()
     print(f"Total pages found: {len(pages)}\n")
 
+    # total_images counts images present after the run (newly saved + already on disk), not only new downloads
     total_images = 0
     pages_with_images = 0
 
@@ -184,6 +200,7 @@ def main():
         try:
             image_urls = get_page_image_urls(page_id)
         except Exception as e:
+            # One bad page shouldn't abort the whole run; it is retried on the next run
             print(f" ERROR fetching blocks: {e}")
             continue
 
