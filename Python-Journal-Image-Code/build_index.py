@@ -63,6 +63,8 @@ def main():
 
     chunks = [json.loads(ln) for ln in chunks_path.read_text().splitlines() if ln]
     ids = [c["chunk_id"] for c in chunks]
+    # set() drops repeats, so the lengths match only if every id is unique. Chroma keys vectors by id, so a duplicate
+    # would overwrite or error mid-build; fail here, before any embedding work. (Skipped if Python runs with -O.)
     assert len(ids) == len(set(ids)), "duplicate chunk_id"
     print({"n_chunks": len(chunks), "chunks_sha256": actual[:12], "model": args.model})
     if args.dry_run:
