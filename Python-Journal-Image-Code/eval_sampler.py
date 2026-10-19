@@ -8,6 +8,7 @@ tool/agent/API. Eval file lives under Journal-Entires/ (gitignored).
   python eval_sampler.py --grep term    # list entries containing a term (for multi-entry questions)
   python eval_sampler.py --show ID ...  # print specific entries
   python eval_sampler.py --stats        # counts per question type
+  python eval_sampler.py --add          # write a question + list its entry_ids yourself (multi/date); no random seed entry
   python eval_sampler.py --draft 40     # local LLM drafts questions; you keep/edit/drop
 
 --draft talks only to the local Ollama server (localhost). Nothing leaves the machine.
@@ -25,6 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ENTRIES = ROOT / "Journal-Entires" / "corpus" / "entries_v1.jsonl"  # input: one record per entry (build_entries.py)
 EVAL = ROOT / "Journal-Entires" / "eval" / "retrieval_v1.jsonl"  # output: append-only, one question per line
+
+GREP_OUT = ROOT / "Journal-Entires" / "eval" / "grep_last.txt"  # scratch: overwritten on every grep (gitignored via Journal-Entires/)
 
 OLLAMA_URL = "http://localhost:11434/api/chat"  # local only; never change to a remote host
 DRAFT_MODEL = "qwen2.5vl:7b"  # already pulled for OCR, so no extra download; any local chat model works via --model
@@ -62,6 +65,17 @@ def load_eval():
         return [json.loads(line) for line in f if line.strip()]
 
 
+def grep_to_file(entries, term):
+    """Write the full text of every entry containing `term` to GREP_OUT, replacing the previous result."""
+    t = term.lower()
+    hits = [e for e in sorted(entries.values(), key=lambda e: e["date"]) if t in e["text"].lower()]
+    bar = "=" * 70
+    body = "\n\n".join(f"{bar}\n{e['entry_id']}  ({e['date']})\n{'-' * 70}\n{e['text']}" for e in hits)
+    GREP_OUT.parent.mkdir(parents=True, exist_ok=True)
+    GREP_OUT.write_text(f"grep: {term}  ({len(hits)} entries)\n\n{body}\n")
+    print(f"  {len(hits)} entries -> {GREP_OUT}")
+
+
 def show(e):
     """Print one entry's full text, framed. This is journal content: terminal only."""
     print(f"\n{'=' * 70}\n{e['entry_id']}  ({e['date']})  pages={e['n_pages']}\n{'-' * 70}\n{e['text']}\n{'=' * 70}")
@@ -76,7 +90,7 @@ def append(rec):
 
 def save(question, ids, qtype, source, model=None):
     """Save one eval record. `relevant` lists every entry_id that answers the question (recall is scored against it)."""
-    n = len(load_eval()) + 1  # qid = next sequence number; the file is append-only so ids never shift
+    n = max((int(r["qid"][1:]) for r in load_eval()), default=0) + 1  # max+1, not len+1: dropped questions leave gaps, so len would reuse an id
     append({
         "qid": f"q{n:03d}", "question": question, "relevant": ids, "type": qtype,
         # source records provenance: hand / llm-draft / llm-draft-edited, so LLM-written questions can be audited later
@@ -180,6 +194,7 @@ def main():
     ap.add_argument("--show", nargs="+")
     ap.add_argument("--stats", action="store_true")
     ap.add_argument("--draft", type=int, metavar="N", help="entries to draft for (default 40)")
+    ap.add_argument("--add", action="store_true", help="add questions with any number of entry_ids (use for multi/date)")
     ap.add_argument("--manual", action="store_true", help="no LLM drafts; write every question yourself")
     ap.add_argument("--model", default=DRAFT_MODEL)
     ap.add_argument("--seed", type=int, default=42)
@@ -192,18 +207,32 @@ def main():
         print(len(recs), "questions", dict(Counter(r["type"] for r in recs)),
               dict(Counter(r.get("source", "hand") for r in recs)))
         return
+    if args.add:
+        # Loop: type "grep <term>" to find candidate entries, or "show <id>" to read one, or write a question
+        print(TIPS)
+        while True:
+            cmd = input("\nQuestion, or 'grep <term>' / 'show <id>' (q=quit): ").strip()
+            if cmd.lower() == "q":
+                return
+            if cmd.startswith("grep "):
+                grep_to_file(entries, cmd[5:])
+            elif cmd.startswith("show "):
+                i = cmd[5:].strip()
+                show(entries[i]) if i in entries else print(f"unknown {i}")
+            elif cmd:
+                extra = input("Relevant entry_ids (comma-sep): ")
+                ids = [i.strip() for i in extra.split(",") if i.strip()]
+                bad = [i for i in ids if i not in entries]
+                if bad or not ids:
+                    print(f"  invalid/empty ids {bad}; not saved")
+                    continue
+                save(cmd, ids, "single" if len(ids) == 1 else "multi", "hand")
     if not args.manual:  # drafting is the default; --manual gives the old write-everything mode
         print(TIPS)
         draft_mode(entries, args.draft or 40, args.model, args.seed)
         return
     if args.grep:
-        t = args.grep.lower()
-        hits = [e for e in entries.values() if t in e["text"].lower()]
-        for e in sorted(hits, key=lambda e: e["date"]):
-            i = e["text"].lower().index(t)  # first occurrence, to center the snippet on it
-            snippet = e["text"][max(0, i - 40): i + 60].replace("\n", " ")
-            print(f"{e['entry_id']:40} …{snippet}…")
-        print(f"\n{len(hits)} entries")
+        grep_to_file(entries, args.grep)
         return
     if args.show:
         for i in args.show:

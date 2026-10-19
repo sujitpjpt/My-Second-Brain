@@ -115,7 +115,10 @@ def main():
         text = e["text"].strip()
         # Most entries (~94%) are short enough to stay whole: one entry = one chunk = one idea
         pieces = [text] if len(text) <= args.split_above else split_text(text, args.chunk_chars, args.min_chunk)
-        # Date + title go into the embedded text so date-flavoured queries ("March 2022") can match
+        # Date + title go into the embedded text so date-flavoured queries ("March 2022") can match.
+        # They come from Notion/the filename, not the handwriting, so embedding the body alone would leave them out of the vector.
+        # Kept out of `text` so displayed/generated context isn't cluttered with a repeated header.
+        # Embeddings match digits only loosely: if date queries stay weak in the eval, filter on the `date` metadata instead
         header = f"{e['date']} · {e['title'].replace('-', ' ')}\n"
         for i, piece in enumerate(pieces):
             # Every piece after the first starts with the end of the previous one, so a thought cut at the boundary survives
