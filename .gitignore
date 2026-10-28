@@ -1,0 +1,29 @@
+# Journal content — never committed, per DATA PRIVACY rules in CLAUDE.md
+Journal-Entires/
+Journal-Entries/
+
+# Private logs
+logs/
+
+# Derived corpus / model artifacts
+*.jsonl
+chroma_db/
+*.gguf
+*.safetensors
+adapters/
+
+# Secrets
+.env
+NOTION_API_TOKEN
+
+# Python
+venv*/
+.venv/
+__pycache__/
+*.pyc
+
+# Claude context — never commit
+CLAUDE.md
+
+# OS
+.DS_Store
