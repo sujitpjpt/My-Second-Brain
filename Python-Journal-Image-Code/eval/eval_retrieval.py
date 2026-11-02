@@ -224,7 +224,12 @@ def main():
     # If unanswerable top-1 distances sit in the same range as answerable ones, the retriever can't abstain on its own.
     # Example: unanswerable min=0.41 vs answerable p90=0.38 -> a cutoff near 0.40 would separate them (good).
     #          unanswerable min=0.22 vs answerable p90=0.38 -> any cutoff that keeps real answers also lets junk through (bad).
-    # p90 = value at index int(0.9 * n) of the sorted list, i.e. 90% of answerable top-1 distances are at or below it
+    # p90 = the value 90% of the way along the sorted answerable top-1 distances (index int(0.9 * n)).
+    #   e.g. sorted: 0.10 0.12 0.15 0.18 0.20 0.22 0.25 0.28 0.31 0.40 -> n=10, index 9 -> p90 = 0.40
+    # Why it matters: a "no answer" cutoff must sit at about p90 to keep 90% of real questions.
+    #   unanswerable distances all above p90 -> the cutoff separates them (good)
+    #   some unanswerable distances below p90 -> that cutoff would let them through (bad)
+    # Rough with ~30 questions: the top 10% is only ~3 questions, so one odd question can move p90 a lot.
     print("\nunanswerable vs answerable top-1 cosine distance (lower = more confident)")
     print(f"  unanswerable  min={min(unanswerable_top1):.3f}  median={statistics.median(unanswerable_top1):.3f}  n={len(unanswerable_top1)}")
     print(f"  answerable    median={statistics.median(answerable_top1):.3f}  p90={sorted(answerable_top1)[int(.9 * len(answerable_top1))]:.3f}")
