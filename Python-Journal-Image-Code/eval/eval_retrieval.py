@@ -69,14 +69,14 @@ def retrieve(col, questions, model, query_prefix):
     # truncate=False makes Ollama error on over-long input instead of silently cutting the query
     emb = ollama.embed(model=model, input=[query_prefix + q for q in questions], truncate=False).embeddings
     # Pass vectors directly so Chroma does not re-embed with its own default model.
+    # n_results means how many nearest chunks to return per query, which is your top-k. The recall@k and MRR numbers depend on it. Recall@k can't be computed for any k larger than N_CHUNKS, so we keep it at least as large as the biggest k we evaluate.
     # Result lists are parallel: res["metadatas"][i] / res["distances"][i] belong to question i.
     res = col.query(query_embeddings=emb, n_results=N_CHUNKS, include=["metadatas", "distances"])
     ranked = []
     for metas, dists in zip(res["metadatas"], res["distances"]):
         # Labels are entry ids but the index holds chunks, and one entry can own several chunks.
         # Collapse to entries by max-pooling: an entry scores as its closest chunk (lower distance = better).
-        # Chroma returns hits best-first, so the first chunk seen for an entry is its closest one; later ones are
-        # dropped, e.g. E1(.2) E2(.3) E1(.4) E3(.5) -> [(E1,.2), (E2,.3), (E3,.5)].
+        # Chroma returns hits best-first, so the first chunk seen for an entry is its closest one; later ones are dropped, e.g. E1(.2) E2(.3) E1(.4) E3(.5) -> [(E1,.2), (E2,.3), (E3,.5)].
         # Caveat: this yields <= N_CHUNKS entries, so N_CHUNKS must comfortably exceed max(KS) or
         # duplicate chunks crowd out entries and understate recall@k / MRR.
         seen = {}  # dict keeps insertion order, so the result is already best-first by entry
@@ -118,6 +118,15 @@ def score(relevant, ranked_ids):
         out[f"hit@{k}"] = float(found > 0)
         # Single gold entry: found is 0 or 1 and len(rel) == 1, so recall@k == hit@k.
         # They differ only for multi-entry questions, e.g. k=3 above: recall 0.5 vs hit 1.0
+    # Final out for the worked example (KS = 1, 3, 5, 10; k=10 behaves like k=5 since only 4 were retrieved):
+    # inputs: relevant   = ["entry_007", "entry_090"]
+    #         ranked_ids = ["entry_042", "entry_007", "entry_113", "entry_090"]
+    # output: {"mrr": 0.5, "first_rank": 2,
+    #         "recall@1": 0.0, "hit@1": 0.0,
+    #         "recall@3": 0.5, "hit@3": 1.0,
+    #         "recall@5": 1.0, "hit@5": 1.0,
+    #         "recall@10": 1.0, "hit@10": 1.0}
+    # Total miss (no gold retrieved): mrr 0.0, first_rank None, every recall@k / hit@k 0.0
     return out
 
 
@@ -160,6 +169,9 @@ def main():
             # and compares them to the gold ids in r["relevant"] (["entry_007"], found at rank 2):
             #   s -> {"mrr": 0.5, "first_rank": 2, "recall@1": 0.0, "recall@3": 1.0, "hit@3": 1.0, ...}
             s = score(r["relevant"], [e for e, _ in hits])
+            # Record the best entry's distance (hits[0] = closest entry, [1] = its distance, e.g. 0.18) regardless of
+            # whether it's actually a gold entry. Compared against unanswerable_top1 below to see if a distance
+            # threshold could separate "has an answer" from "no answer"
             answerable_top1.append(hits[0][1])
             # Row example: {"qid": "q03", "type": "single", "n_relevant": 1, "top1_distance": 0.18, "mrr": 0.5, ...}
             # (**s merges the metric dict into the row)
@@ -168,10 +180,27 @@ def main():
     # Group answerable rows by question type (e.g. single vs multi-entry) for the per-type table
     # Unanswerable questions have no gold entry, so recall/MRR are undefined for them; they're only used for distances below
     answerable = [p for p in per_q if p["type"] != "unanswerable"]
-    # by_type example: {"single": [row_q01, row_q02, ...], "multi": [row_q23, ...]}
+    # defaultdict(list): the first by_type["single"] auto-creates an empty list, so no "key exists?" check is needed
     by_type = defaultdict(list)
     for p in answerable:
+        # p = one per_q row; append it to the list for its type
         by_type[p["type"]].append(p)
+    # Actual value after the loop (rows are the full per_q dicts; metrics abbreviated, k=10 keys omitted):
+    # {
+    #   "single": [
+    #     {"qid": "q01", "type": "single", "n_relevant": 1, "top1_distance": 0.18, "mrr": 1.0, "first_rank": 1,
+    #      "recall@1": 1.0, "hit@1": 1.0, "recall@3": 1.0, "hit@3": 1.0, "recall@5": 1.0, "hit@5": 1.0, ...},
+    #     {"qid": "q03", "type": "single", "n_relevant": 1, "top1_distance": 0.18, "mrr": 0.5, "first_rank": 2,
+    #      "recall@1": 0.0, "hit@1": 0.0, "recall@3": 1.0, "hit@3": 1.0, "recall@5": 1.0, "hit@5": 1.0, ...},
+    #     ...
+    #   ],
+    #   "multi": [
+    #     {"qid": "q23", "type": "multi", "n_relevant": 2, "top1_distance": 0.22, "mrr": 0.5, "first_rank": 2,
+    #      "recall@1": 0.0, "hit@1": 0.0, "recall@3": 0.5, "hit@3": 1.0, "recall@5": 1.0, "hit@5": 1.0, ...},
+    #     ...
+    #   ],
+    # }   # no "unanswerable" key: those rows were filtered out above
+    # mean(rows, "recall@3") later averages that column over one list, e.g. over by_type["single"]
 
     # Report per type, plus a macro average (types weighted equally so 22 singles don't drown 8 multis)
     # recall@k for every k, plus hit@5/hit@10 (hit@1 == recall@1 for single-entry questions, so it is omitted)
