@@ -15,6 +15,7 @@ tool/agent/API. Eval file lives under Journal-Entires/ (gitignored).
 """
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -198,7 +199,12 @@ def main():
     ap.add_argument("--manual", action="store_true", help="no LLM drafts; write every question yourself")
     ap.add_argument("--model", default=DRAFT_MODEL)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--version", default="v1", help="eval set to write/read: retrieval_<version>.jsonl (v1 is frozen; use v2 for a new set)")
     args = ap.parse_args()
+    global EVAL
+    EVAL = EVAL.with_name(f"retrieval_{args.version}.jsonl")
+    if EVAL.exists() and not os.access(EVAL, os.W_OK):
+        raise SystemExit(f"{EVAL.name} is frozen (read-only); pass a new --version")
     entries = load_entries()
 
     # Modes are checked in order: --stats, then draft (the default), then the --manual helpers (--grep, --show, free sampling)
@@ -226,7 +232,9 @@ def main():
                 if bad or not ids:
                     print(f"  invalid/empty ids {bad}; not saved")
                     continue
-                save(cmd, ids, "single" if len(ids) == 1 else "multi", "hand")
+                default = "single" if len(ids) == 1 else "multi"
+                qtype = input(f"Type [{default}/date/unanswerable] (enter={default}): ").strip() or default
+                save(cmd, ids, qtype, "hand")
     if not args.manual:  # drafting is the default; --manual gives the old write-everything mode
         print(TIPS)
         draft_mode(entries, args.draft or 40, args.model, args.seed)

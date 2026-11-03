@@ -2,6 +2,7 @@
 
     python eval/freeze_eval.py
 """
+import argparse
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent.parent / "Journal-Entires"
-EVAL = ROOT / "eval" / "retrieval_v1.jsonl"
+EVAL = ROOT / "eval" / "retrieval_v1.jsonl"  # rebound in main() from --version
 MANIFEST = ROOT / "eval" / "retrieval_v1_manifest.json"
 ENTRIES = ROOT / "corpus" / "entries_v1.jsonl"
 
@@ -28,6 +29,12 @@ def sha256(path):
 
 
 def main():
+    global EVAL, MANIFEST
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--version", default="v1")
+    args = ap.parse_args()
+    EVAL = EVAL.with_name(f"retrieval_{args.version}.jsonl")
+    MANIFEST = MANIFEST.with_name(f"retrieval_{args.version}_manifest.json")
     if MANIFEST.exists():
         raise SystemExit(f"{MANIFEST.name} exists: eval set already frozen. Make retrieval_v2 instead of editing v1")
 

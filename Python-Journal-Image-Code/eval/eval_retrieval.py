@@ -38,11 +38,11 @@ def load_jsonl(path):
     return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
-def verify_inputs(index_manifest):
+def verify_inputs(index_manifest, version):
     """Refuse to score anything whose inputs drifted from their frozen manifests (otherwise numbers aren't comparable)."""
-    # Fixed v1 filenames: a new eval/corpus version means a new frozen file here, never an in-place edit
-    eval_path = EVAL_DIR / "retrieval_v1.jsonl"
-    eval_man = json.loads((EVAL_DIR / "retrieval_v1_manifest.json").read_text())
+    # A new eval version means a new frozen file, never an in-place edit
+    eval_path = EVAL_DIR / f"retrieval_{version}.jsonl"
+    eval_man = json.loads((EVAL_DIR / f"retrieval_{version}_manifest.json").read_text())
     chunks_man = json.loads((CORPUS / "chunks_manifest_v1.json").read_text())
     # Each check is True when the artifact still matches the hash recorded when it was frozen
     checks = {
@@ -138,11 +138,12 @@ def mean(rows, key):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--collection", default="nomic-embed-text_chunks_v1")
+    ap.add_argument("--eval-version", default="v1", help="frozen eval set to score against (retrieval_<version>.jsonl)")
     args = ap.parse_args()
 
     # The manifest written at index-build time is the source of truth for model, prefix and chunk hash
     index_manifest = json.loads((CORPUS / f"index_manifest_{args.collection}.json").read_text())
-    eval_path, eval_man = verify_inputs(index_manifest)
+    eval_path, eval_man = verify_inputs(index_manifest, args.eval_version)
     recs = load_jsonl(eval_path)
 
     col = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(args.collection)
@@ -245,7 +246,7 @@ def main():
     out_dir.mkdir(exist_ok=True)
     # UTC timestamp in the filename: every run is kept, nothing is overwritten
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = out_dir / f"{args.collection}__{stamp}.json"
+    out = out_dir / f"{args.collection}__eval-{args.eval_version}__{stamp}.json"
     # Hashes + embedder digest pin exactly what was scored, so two result files are only comparable if these match
     # Example file: results/nomic-embed-text_chunks_v1__20261028T143005Z.json
     #   {"run_at": "20261028T143005Z", "collection": "nomic-embed-text_chunks_v1", "embed_model": "nomic-embed-text",
@@ -253,7 +254,7 @@ def main():
     #    "macro": {"recall@1": 0.443, ...}, "by_type": {"single": {...}, "multi": {...}}, "per_question": [{...}, ...]}
     # To compare two runs: check eval_sha256 / chunks_sha256 / embed_model_digest match, then diff "macro" and per_question rows
     out.write_text(json.dumps({
-        "run_at": stamp, "collection": args.collection,
+        "run_at": stamp, "collection": args.collection, "eval_version": args.eval_version,
         "embed_model": index_manifest["model"], "embed_model_digest": index_manifest["model_digest"],
         "query_prefix": index_manifest["query_prefix"], "eval_sha256": eval_man["sha256"],
         "chunks_sha256": index_manifest["chunks_sha256"], "ks": KS,
