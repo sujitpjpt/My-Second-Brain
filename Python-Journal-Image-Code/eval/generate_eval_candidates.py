@@ -140,8 +140,10 @@ journal entry: people, places, activities, recurring concerns. Reply as JSON: {"
 ENTRY:
 """
 MULTI_PROMPT = """Below are several dated journal entries by one person. Write ONE first-person question that
-needs information from at least 3 of them to answer fully (e.g. how something recurred or changed over time).
-Paraphrase; no dates; must make sense without seeing the entries. Reply as JSON: {"question": "..."}.
+needs information from at least 3 of them to answer fully (e.g. how a recurring worry, habit or relationship showed up across entries).
+Paraphrase; NO dates, years, months, seasons or time ranges (no "from early 2022 to 2024", "over the years", "lately"):
+dense retrieval cannot match them, so they would test date handling, not topic coverage. Must make sense without
+seeing the entries. Reply as JSON: {"question": "..."}.
 
 """
 

@@ -2,8 +2,13 @@
 
     python eval/eval_retrieval.py                                      # default collection nomic-embed-text_chunks_v1
     python eval/eval_retrieval.py --collection bge-m3_chunks_v1        # compare a variant (prefixes come from its manifest)
+    python eval/eval_retrieval.py --eval-version v2 --date-filter      # restrict to the date named in the question, if any
+    python eval/eval_retrieval.py --ann                                # Chroma's approximate HNSW search instead of exact
 
-Retrieval only: no generator and no LLM judge, so the run is deterministic and needs no model but the embedder.
+Retrieval only: no generator and no LLM judge, and it needs no model but the embedder. Search is EXACT by default
+(brute-force cosine over every chunk vector in numpy), so the same inputs give the same ranking in every process.
+Chroma's HNSW search is approximate and was seen to return different rankings in separate processes on the same index
+(q015, q033, q051, q069, 2026-11-05); it stays available behind --ann to measure how far it drifts from exact.
 Everything is local (Ollama on localhost + chroma_db/). Terminal output has ids, ranks and numbers, never journal text.
 Per-question results go to Journal-Entires/eval/results/ (gitignored via Journal-Entires/).
 """
@@ -11,12 +16,17 @@ import argparse
 import hashlib
 import json
 import statistics
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import chromadb
+import numpy as np
 import ollama
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # so `retrieve` (a sibling of eval/) imports from any cwd
+from retrieve.date_filter import date_window  # noqa: E402
 
 # This file lives at <repo>/Python-Journal-Image-Code/eval/, so the repo root is three levels up
 REPO = Path(__file__).parent.parent.parent
@@ -24,8 +34,11 @@ CORPUS = REPO / "Journal-Entires" / "corpus"
 EVAL_DIR = REPO / "Journal-Entires" / "eval"
 CHROMA_DIR = REPO / "chroma_db"
 
-KS = (1, 3, 5, 10)  # cutoffs reported; the largest is also how many entries we keep per query
-N_CHUNKS = 50       # chunks fetched per query; enough to yield >= max(KS) distinct entries after collapsing
+KS = (1, 3, 5, 10, 20, 30)  # cutoffs reported; the largest is also how many entries we keep per query
+N_CHUNKS = 60       # chunks fetched per query; enough to yield >= max(KS) distinct entries after collapsing
+MISS_K = 10         # "miss" list cutoff, fixed so it stays comparable when KS grows
+# Multi-chunk entries collapse, so demand 2x headroom or hit@30 silently reads low
+assert N_CHUNKS >= 2 * max(KS), "N_CHUNKS too small for max(KS)"
 
 
 def sha256(path):
@@ -56,8 +69,57 @@ def verify_inputs(index_manifest, version):
     return eval_path, eval_man
 
 
-def retrieve(col, questions, model, query_prefix):
-    """Embed all questions in one local call, then return, per question, a ranked list of (entry_id, distance).
+def load_exact_index(col):
+    """Pull every chunk vector out of Chroma once, in a fixed order, as a unit-length float64 matrix.
+
+    Returns (V, metas): V is (n_chunks, dim), metas[i] is the metadata dict of row i (entry_id, date, ...).
+    Rows are sorted by chunk id, so row order never depends on Chroma's internal storage order. That fixed order is
+    what makes the tie-break in exact_rank() deterministic.
+    """
+    got = col.get(include=["embeddings", "metadatas"])
+    order = np.argsort(got["ids"], kind="stable")  # chunk ids are strings; sorted order is the canonical row order
+    V = np.asarray(got["embeddings"], dtype=np.float64)[order]  # float64: removes float32 accumulation noise
+    metas = [got["metadatas"][i] for i in order]
+    return unit(V), metas
+
+
+def unit(x):
+    """L2-normalise rows. For unit vectors, dot product == cosine similarity, so cosine distance = 1 - dot."""
+    return x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+
+def exact_rank(V, metas, q_vec, n_results, dates=None):
+    """Brute-force nearest chunks for one query: score ALL chunks, sort, keep the top n_results.
+
+    Returns (metas_list, dists_list) best-first, the same shape col.query() gives per question, so the code below
+    (entry collapsing, scoring) is unchanged whichever search produced it.
+
+    dates: optional list of ISO dates. Chunks on other dates are excluded, which is what Chroma's
+    where={"date": {"$in": dates}} did, but exactly.
+
+    Worked example (4 chunks, rows already sorted by chunk id), distances to the query:
+        row0 0.200000 | row1 0.150000 | row2 0.150000 | row3 0.400000
+        round to 6 decimals, stable sort -> rows 1, 2, 0, 3. Rows 1 and 2 tie, and the lower row (= lower chunk id)
+        wins, every run. Without the rounding, 0.1500000001 vs 0.1499999999 could swap them between runs.
+    """
+    q = unit(np.asarray(q_vec, dtype=np.float64))
+    dist = np.round(1.0 - V @ q, 6)  # cosine distance to every chunk: 0 = identical direction, 1 = unrelated
+    if dates is not None:
+        allowed = np.array([m["date"] in set(dates) for m in metas])
+        dist = np.where(allowed, dist, np.inf)  # excluded chunks sort last...
+        n_results = min(n_results, int(allowed.sum()))  # ...and are cut off by the count, never returned
+    # kind="stable" keeps equal-distance rows in their original (chunk-id) order, which is the tie-break.
+    idx = np.argsort(dist, kind="stable")[:n_results]
+    return [metas[i] for i in idx], [float(dist[i]) for i in idx]
+
+
+def retrieve(col, questions, model, query_prefix, date_filter=False, ann=False):
+    """Embed all questions in one local call, then return (ranked, windows).
+
+    Search is exact brute force by default (see exact_rank); ann=True uses Chroma's approximate HNSW index instead.
+
+    ranked: per question, a ranked list of (entry_id, distance).
+    windows: parallel list; None = no filter applied, else (kind, n_dates_in_window) for questions that named a date.
 
     Shape (outer list parallel to `questions`; distances ascend, lower = closer):
         [
@@ -71,9 +133,37 @@ def retrieve(col, questions, model, query_prefix):
     # Pass vectors directly so Chroma does not re-embed with its own default model.
     # n_results means how many nearest chunks to return per query, which is your top-k. The recall@k and MRR numbers depend on it. Recall@k can't be computed for any k larger than N_CHUNKS, so we keep it at least as large as the biggest k we evaluate.
     # Result lists are parallel: res["metadatas"][i] / res["distances"][i] belong to question i.
-    res = col.query(query_embeddings=emb, n_results=N_CHUNKS, include=["metadatas", "distances"])
+    if ann:
+        res = col.query(query_embeddings=emb, n_results=N_CHUNKS, include=["metadatas", "distances"])
+        metas_all, dists_all = res["metadatas"], res["distances"]
+    else:
+        # Exact path: load the 248 vectors once, then score every chunk for every question. No graph, no shortcut.
+        V, all_metas = load_exact_index(col)
+        pairs = [exact_rank(V, all_metas, e, N_CHUNKS) for e in emb]
+        metas_all, dists_all = [p[0] for p in pairs], [p[1] for p in pairs]
+    windows = [None] * len(questions)
+    if date_filter:
+        # Chroma's $gte/$lte only handle numbers and `date` is an ISO string, so expand each window into the concrete
+        # dates the index holds and match with $in. Questions that name no explicit date keep the unfiltered ranking above.
+        n_chunks_on = {}  # date -> number of chunks, so n_results never exceeds what the filter can return
+        for m in col.get(include=["metadatas"])["metadatas"]:
+            n_chunks_on[m["date"]] = n_chunks_on.get(m["date"], 0) + 1
+        for i, q in enumerate(questions):
+            hit = date_window(q, n_chunks_on)
+            if hit is None:
+                continue
+            kind, dates = hit
+            windows[i] = (kind, len(dates))
+            if not dates:
+                continue  # named a date nothing is indexed on: keep the unfiltered ranking rather than return nothing
+            if ann:
+                r = col.query(query_embeddings=[emb[i]], n_results=min(N_CHUNKS, sum(n_chunks_on[d] for d in dates)),
+                              where={"date": {"$in": dates}}, include=["metadatas", "distances"])
+                metas_all[i], dists_all[i] = r["metadatas"][0], r["distances"][0]
+            else:
+                metas_all[i], dists_all[i] = exact_rank(V, all_metas, emb[i], N_CHUNKS, dates)
     ranked = []
-    for metas, dists in zip(res["metadatas"], res["distances"]):
+    for metas, dists in zip(metas_all, dists_all):
         # Labels are entry ids but the index holds chunks, and one entry can own several chunks.
         # Collapse to entries by max-pooling: an entry scores as its closest chunk (lower distance = better).
         # Chroma returns hits best-first, so the first chunk seen for an entry is its closest one; later ones are dropped, e.g. E1(.2) E2(.3) E1(.4) E3(.5) -> [(E1,.2), (E2,.3), (E3,.5)].
@@ -83,7 +173,7 @@ def retrieve(col, questions, model, query_prefix):
         for m, d in zip(metas, dists):
             seen.setdefault(m["entry_id"], d)
         ranked.append(list(seen.items()))
-    return ranked
+    return ranked, windows
 
 
 def score(relevant, ranked_ids):
@@ -139,6 +229,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--collection", default="nomic-embed-text_chunks_v1")
     ap.add_argument("--eval-version", default="v1", help="frozen eval set to score against (retrieval_<version>.jsonl)")
+    ap.add_argument("--ann", action="store_true", help="use Chroma's approximate HNSW search instead of exact brute force (not reproducible across processes)")
+    ap.add_argument("--date-filter", action="store_true", help="restrict candidates to the date/month/year named in the question")
     args = ap.parse_args()
 
     # The manifest written at index-build time is the source of truth for model, prefix and chunk hash
@@ -150,7 +242,7 @@ def main():
     assert col.count() == index_manifest["n_vectors"], "collection changed since its manifest was written"
 
     # ranked[i] aligns with recs[i]: [(entry_id, best_chunk_distance), ...], best first
-    ranked = retrieve(col, [r["question"] for r in recs], index_manifest["model"], index_manifest["query_prefix"])
+    ranked, windows = retrieve(col, [r["question"] for r in recs], index_manifest["model"], index_manifest["query_prefix"], args.date_filter, args.ann)
 
     # per_q holds one row per question; The other two hold only top-1 distances, split by question type.
     per_q, answerable_top1, unanswerable_top1 = [], [], []
@@ -204,9 +296,9 @@ def main():
     # mean(rows, "recall@3") later averages that column over one list, e.g. over by_type["single"]
 
     # Report per type, plus a macro average (types weighted equally so 22 singles don't drown 8 multis)
-    # recall@k for every k, plus hit@5/hit@10 (hit@1 == recall@1 for single-entry questions, so it is omitted)
-    # e.g. with KS = [1, 3, 5, 10]: ["recall@1", "recall@3", "recall@5", "recall@10", "hit@5", "hit@10", "mrr"]
-    cols = [f"recall@{k}" for k in KS] + ["hit@5", "hit@10", "mrr"]
+    # recall@k for every k, plus hit@k for k >= 5 (hit@1 == recall@1 for single-entry questions, so it is omitted)
+    # e.g. with KS = [1, 3, 5, 10]: ["recall@1", "recall@3", "recall@5", "recall@10", "hit@5", "hit@10", "hit@20", "hit@30", "mrr"]
+    cols = [f"recall@{k}" for k in KS] + [f"hit@{k}" for k in KS if k >= 5] + ["mrr"]
     print(f"\ncollection={args.collection}  questions={len(recs)}  chunks={col.count()}")
     # Illustrative output (numbers made up):
     #   type            n   recall@1   recall@3  ...      mrr
@@ -235,18 +327,35 @@ def main():
     print(f"  unanswerable  min={min(unanswerable_top1):.3f}  median={statistics.median(unanswerable_top1):.3f}  n={len(unanswerable_top1)}")
     print(f"  answerable    median={statistics.median(answerable_top1):.3f}  p90={sorted(answerable_top1)[int(.9 * len(answerable_top1))]:.3f}")
 
+    # Date-filter audit (ids and counts only). Date gold is "every entry on that day/month", so a correct parse makes date
+    # questions near-trivial: this measures parser coverage, not retrieval. The check that matters is no false fires elsewhere.
+    fired = {r["qid"]: w for r, w in zip(recs, windows) if w}
+    if args.date_filter:
+        fired_by_type = defaultdict(int)
+        type_of = {r["qid"]: r["type"] for r in recs}
+        for qid in fired:
+            fired_by_type[type_of[qid]] += 1
+        print("\ndate filter fired on:", dict(fired_by_type) or "nothing")
+        unparsed = [r["qid"] for r in recs if r["type"] == "date" and r["qid"] not in fired]
+        false_fires = [q for q in fired if type_of[q] != "date"]
+        print(f"  date questions NOT parsed ({len(unparsed)}): {', '.join(unparsed) or '-'}")
+        print(f"  fired on non-date questions ({len(false_fires)}): {', '.join(false_fires) or '-'}")
+        empty = [q for q, (_, n) in fired.items() if n == 0]
+        print(f"  parsed but no indexed date in window ({len(empty)}): {', '.join(empty) or '-'}")
+
     # Misses worth a look: ids and ranks only (look up text yourself with eval_sampler.py --show)
     # first_rank is the 1-based rank of the first gold entry: None = never retrieved, 14 = found but past the largest k (10)
     # Example printed line: "not in top 10 entries (2): q07(single), q26(multi)"
-    misses = [p for p in answerable if p["first_rank"] is None or p["first_rank"] > max(KS)]
-    print(f"\nnot in top {max(KS)} entries ({len(misses)}): " + ", ".join(f"{p['qid']}({p['type']})" for p in misses))
+    misses = [p for p in answerable if p["first_rank"] is None or p["first_rank"] > MISS_K]
+    print(f"\nnot in top {MISS_K} entries ({len(misses)}): " + ", ".join(f"{p['qid']}({p['type']})" for p in misses))
 
     # Save everything needed to compare runs later: inputs' hashes, embedder digest, per-question rows
     out_dir = EVAL_DIR / "results"  # under Journal-Entires/, so gitignored
     out_dir.mkdir(exist_ok=True)
     # UTC timestamp in the filename: every run is kept, nothing is overwritten
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = out_dir / f"{args.collection}__eval-{args.eval_version}__{stamp}.json"
+    suffix = ("__ann" if args.ann else "") + ("__datefilter" if args.date_filter else "")  # filtered and baseline runs must not be mistaken for each other
+    out = out_dir / f"{args.collection}__eval-{args.eval_version}{suffix}__{stamp}.json"
     # Hashes + embedder digest pin exactly what was scored, so two result files are only comparable if these match
     # Example file: results/nomic-embed-text_chunks_v1__20261028T143005Z.json
     #   {"run_at": "20261028T143005Z", "collection": "nomic-embed-text_chunks_v1", "embed_model": "nomic-embed-text",
@@ -254,12 +363,13 @@ def main():
     #    "macro": {"recall@1": 0.443, ...}, "by_type": {"single": {...}, "multi": {...}}, "per_question": [{...}, ...]}
     # To compare two runs: check eval_sha256 / chunks_sha256 / embed_model_digest match, then diff "macro" and per_question rows
     out.write_text(json.dumps({
-        "run_at": stamp, "collection": args.collection, "eval_version": args.eval_version,
+        "run_at": stamp, "collection": args.collection, "eval_version": args.eval_version, "date_filter": args.date_filter,
+        "search": "ann_hnsw" if args.ann else "exact_numpy",
         "embed_model": index_manifest["model"], "embed_model_digest": index_manifest["model_digest"],
         "query_prefix": index_manifest["query_prefix"], "eval_sha256": eval_man["sha256"],
         "chunks_sha256": index_manifest["chunks_sha256"], "ks": KS,
         "macro": macro, "by_type": {t: {c: mean(rows, c) for c in cols} for t, rows in by_type.items()},
-        "per_question": per_q,
+        "per_question": per_q, "date_filter_fired": {q: {"kind": k, "n_dates": n} for q, (k, n) in fired.items()},
     }, indent=2))
     print(f"\nwrote {out.relative_to(REPO)}")
 
