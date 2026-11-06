@@ -2,9 +2,11 @@
 
     python eval/eval_retrieval.py                                      # default collection nomic-embed-text_chunks_v1
     python eval/eval_retrieval.py --collection bge-m3_chunks_v1        # compare a variant (prefixes come from its manifest)
-    python eval/eval_retrieval.py --eval-version v2 --date-filter      # restrict to the date named in the question, if any
+    python eval/eval_retrieval.py --eval-version v2 --no-date-filter   # turn the date filter off (it is on by default)
     python eval/eval_retrieval.py --ann                                # Chroma's approximate HNSW search instead of exact
 
+The date filter is ON by default: a question that names an explicit date is restricted to that window, all others
+keep the plain ranking. Pass --no-date-filter for the unfiltered baseline (its result files get a __nodatefilter suffix).
 Retrieval only: no generator and no LLM judge, and it needs no model but the embedder. Search is EXACT by default
 (brute-force cosine over every chunk vector in numpy), so the same inputs give the same ranking in every process.
 Chroma's HNSW search is approximate and was seen to return different rankings in separate processes on the same index
@@ -113,7 +115,7 @@ def exact_rank(V, metas, q_vec, n_results, dates=None):
     return [metas[i] for i in idx], [float(dist[i]) for i in idx]
 
 
-def retrieve(col, questions, model, query_prefix, date_filter=False, ann=False):
+def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
     """Embed all questions in one local call, then return (ranked, windows).
 
     Search is exact brute force by default (see exact_rank); ann=True uses Chroma's approximate HNSW index instead.
@@ -230,7 +232,10 @@ def main():
     ap.add_argument("--collection", default="nomic-embed-text_chunks_v1")
     ap.add_argument("--eval-version", default="v1", help="frozen eval set to score against (retrieval_<version>.jsonl)")
     ap.add_argument("--ann", action="store_true", help="use Chroma's approximate HNSW search instead of exact brute force (not reproducible across processes)")
-    ap.add_argument("--date-filter", action="store_true", help="restrict candidates to the date/month/year named in the question")
+    # Default ON: dense embeddings can't match dates, so explicit-date questions need the metadata window to work at all.
+    # dest="date_filter" with store_false means args.date_filter is True unless --no-date-filter is passed.
+    ap.add_argument("--no-date-filter", dest="date_filter", action="store_false",
+                    help="turn off the date filter (on by default) to get the unfiltered baseline")
     args = ap.parse_args()
 
     # The manifest written at index-build time is the source of truth for model, prefix and chunk hash
@@ -354,7 +359,7 @@ def main():
     out_dir.mkdir(exist_ok=True)
     # UTC timestamp in the filename: every run is kept, nothing is overwritten
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    suffix = ("__ann" if args.ann else "") + ("__datefilter" if args.date_filter else "")  # filtered and baseline runs must not be mistaken for each other
+    suffix = ("__ann" if args.ann else "") + ("__nodatefilter" if not args.date_filter else "")  # the default (filtered) run has no suffix; the unfiltered baseline is marked
     out = out_dir / f"{args.collection}__eval-{args.eval_version}{suffix}__{stamp}.json"
     # Hashes + embedder digest pin exactly what was scored, so two result files are only comparable if these match
     # Example file: results/nomic-embed-text_chunks_v1__20261028T143005Z.json
