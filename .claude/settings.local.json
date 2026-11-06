@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:ollama.com)",
+      "Bash(ollama ps *)",
+      "Bash(ollama show *)",
+      "Bash(ollama list *)",
+      "Bash(echo \"exit:$?\")",
+      "mcp__claude_ai_Notion__notion-fetch",
+      "Bash(sysctl hw.memsize)",
+      "Bash(awk '{print $2/1073741824 \" GB\"}')",
+      "Bash(sw_vers)",
+      "Bash(sysctl -n machdep.cpu.brand_string)",
+      "Bash(system_profiler SPHardwareDataType)",
+      "mcp__claude_ai_Notion__notion-create-database",
+      "mcp__claude_ai_Notion__notion-create-view",
+      "mcp__claude_ai_Notion__notion-update-page"
+    ]
+  }
+}

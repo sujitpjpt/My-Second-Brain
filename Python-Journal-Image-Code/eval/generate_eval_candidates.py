@@ -289,7 +289,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("generate")
-    g.add_argument("--model", required=True, help="local Ollama text model, ideally a different family from your answerer/embedder")
+    g.add_argument("--model", default="qwen2.5:14b-instruct", help="local Ollama text model, ideally a different family from your answerer/embedder")
     g.add_argument("--n-single", type=int, default=25)
     g.add_argument("--n-date", type=int, default=10)
     g.add_argument("--n-multi", type=int, default=10)
