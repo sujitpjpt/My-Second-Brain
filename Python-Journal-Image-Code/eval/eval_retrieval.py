@@ -184,6 +184,17 @@ def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
             windows[i] = (kind, len(dates))
             if not dates:
                 continue  # named a date nothing is indexed on: keep the unfiltered ranking rather than return nothing
+                
+            # The chromadb query output looks like this:
+            # {'data': None,
+            # 'distances': [[0.0, 0.2928932309150696]],
+            # 'documents': None,
+            # 'embeddings': None,
+            # 'ids': [['c0', 'c1']],
+            # 'included': ['metadatas', 'distances'],
+            # 'metadatas': [[{'date': '2024-03-01', 'entry_id': '2024-03-01_fake'},
+            #                 {'date': '2024-03-05', 'entry_id': '2024-03-05_fake'}]],
+            # 'uris': None}
             if ann:
                 r = col.query(query_embeddings=[emb[i]], n_results=min(N_CHUNKS, sum(n_chunks_on[d] for d in dates)),
                               where={"date": {"$in": dates}}, include=["metadatas", "distances"])
@@ -192,17 +203,28 @@ def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
                 metas_all[i], dists_all[i] = exact_rank(V, all_metas, emb[i], N_CHUNKS, dates)
     # By here, metas_all and dists_all are parallel lists with one inner list per question (either search path, filtered or not).
     # Each inner list holds up to N_CHUNKS chunks (fewer if a date filter left fewer), closest first. Example for 2 questions:
-    #   metas_all = [
-    #     [{"entry_id": "entry_042", "date": "2024-03-17", ...}, {"entry_id": "entry_007", "date": "2024-03-05", ...},
-    #      {"entry_id": "entry_042", "date": "2024-03-17", ...}, ...],   # questions[0]: chunk metadata (entry_042 appears twice: two chunks)
-    #     [{"entry_id": "entry_090", ...}, {"entry_id": "entry_042", ...}, ...],   # questions[1]
+    #   metas_all = 
+    #   [
+    #       [
+    #           {"entry_id": "entry_042", "date": "2024-03-17", ...}, 
+    #           {"entry_id": "entry_007", "date": "2024-03-05", ...},
+    #           {"entry_id": "entry_042", "date": "2024-03-17", ...}, 
+    #           ...
+    #       ],   # questions[0]: chunk metadata (entry_042 appears twice: two chunks)
+    #       [
+    #           {"entry_id": "entry_090", ...}, 
+    #           {"entry_id": "entry_042", ...}, 
+    #           ...
+    #       ],   # questions[1]
     #   ]
+
     #   dists_all = [
     #     [0.18, 0.31, 0.34, ...],   # questions[0]: cosine distance of the chunk at the same position in metas_all[0]
     #     [0.22, 0.29, ...],         # questions[1]
     #   ]
     # metas_all[q][j] and dists_all[q][j] describe the same chunk. The loop below zips them and collapses chunks to entries.
     ranked = []
+    # This loop turns each question's ranked list of chunks into a ranked list of entries. The search returns chunks, but your eval labels are entry ids, and one entry can have several chunks. Without this step, one entry could fill several ranks and count more than once.
     for metas, dists in zip(metas_all, dists_all):
         # Labels are entry ids but the index holds chunks, and one entry can own several chunks.
         # Collapse to entries by max-pooling: an entry scores as its closest chunk (lower distance = better).
