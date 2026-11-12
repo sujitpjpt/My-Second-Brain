@@ -1,0 +1,25 @@
+# My Second Brain: Python dependencies (Python 3.13, Apple Silicon)
+#
+#   python3.13 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Pinned with == where the version is known to work (taken from the system Python 3.13.7 that runs the pipeline today).
+# torch / sentence-transformers aren't installed anywhere yet, so they have minimum versions only. After installing
+# them, run `pip freeze | grep -iE "^(torch|sentence-transformers|transformers)=="` and pin the result here.
+#
+# Not pip packages, needed separately:
+#   - Ollama app (local server on localhost:11434) plus the pulled models (OCR vision model, nomic-embed-text)
+#   - macOS `sips` (built in), called by extract/convert_to_jpg.py
+
+# Phase 1: extraction (Notion API) and OCR / embeddings through local Ollama
+requests==2.34.2          # extract/download_journal_images.py: Notion API + image download
+ollama==0.6.2             # ocr/, eval/, index/: local OCR, embeddings and draft LLM calls
+
+# Phase 2: index, exact search, eval
+chromadb==1.5.9           # index/build_index.py, eval/eval_retrieval.py: local persistent vector store (chroma_db/)
+numpy==2.5.4              # eval/eval_retrieval.py: exact brute-force cosine search
+
+# Phase 2: reranking (retrieve/rerank.py), runs offline after a one-time --download
+huggingface_hub==1.17.0   # retrieve/rerank.py --download: fetch pinned reranker weights
+torch>=2.6               # MPS backend for the cross-encoder on Apple Silicon
+sentence-transformers>=4.1  # CrossEncoder.predict(activation_fn=...) used for raw logits
