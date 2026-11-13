@@ -101,7 +101,7 @@ def rerank(model, question, hits, depth):
         scores A 0.2 | B 1.7 | C 1.7 | D (not scored)
         -> B C A D. B and C tie after rounding, so B (better dense rank) stays first; D is appended unscored.
     """
-    # Example:
+    # The hits passed is still in dense order for one particular question. Example:
     # hits = [
     # (meta_A, 0.31, "text A..."),   # position 0
     # (meta_B, 0.35, "text B..."),   # position 1
