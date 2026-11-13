@@ -4,6 +4,7 @@
     python eval/eval_retrieval.py --collection bge-m3_chunks_v1        # compare a variant (prefixes come from its manifest)
     python eval/eval_retrieval.py --eval-version v2 --no-date-filter   # turn the date filter off (it is on by default)
     python eval/eval_retrieval.py --ann                                # Chroma's approximate HNSW search instead of exact
+    python eval/eval_retrieval.py --rerank --rerank-depth 40           # reorder the top 40 chunks with the local cross-encoder
 
 The date filter is ON by default: a question that names an explicit date is restricted to that window, all others
 keep the plain ranking. Pass --no-date-filter for the unfiltered baseline (its result files get a __nodatefilter suffix).
@@ -29,6 +30,9 @@ import ollama
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # so `retrieve` (a sibling of eval/) imports from any cwd
 from retrieve.date_filter import date_window  # noqa: E402
+# noqa: E402 silences the linter rule "import not at top of file": these imports must follow sys.path.insert above.
+# Cheap import: it only forces HF_HUB_OFFLINE=1; torch / sentence_transformers load inside load_reranker()
+from retrieve.rerank import load_reranker, rerank  # noqa: E402
 
 # This file lives at <repo>/Python-Journal-Image-Code/eval/, so the repo root is three levels up
 REPO = Path(__file__).parent.parent.parent
@@ -121,13 +125,17 @@ def exact_rank(V, metas, q_vec, n_results, dates=None):
     return [metas[i] for i in idx], [float(dist[i]) for i in idx]
 
 
-def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
-    """Embed all questions in one local call, then return (ranked, windows).
+def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False, reranker=None, rerank_depth=40):
+    """Embed all questions in one local call, then return (ranked, windows, rr).
 
     Search is exact brute force by default (see exact_rank); ann=True uses Chroma's approximate HNSW index instead.
+    reranker: a model from retrieve.rerank.load_reranker(), or None. When set, each question's top `rerank_depth`
+    chunks are reordered by cross-encoder score AFTER the date filter and BEFORE chunks collapse to entries.
 
-    ranked: per question, a ranked list of (entry_id, distance).
+    ranked: per question, a ranked list of (entry_id, distance). Distance stays the dense cosine distance even when
+            reranked: the order changes, the numbers don't.
     windows: parallel list; None = no filter applied, else (kind, n_dates_in_window) for questions that named a date.
+    rr: parallel list; None without a reranker, else {"top1_rerank_score": float, "n_truncated": int}.
 
     Shape (outer list parallel to `questions`; distances ascend, lower = closer):
         [
@@ -223,6 +231,97 @@ def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
     #     [0.22, 0.29, ...],         # questions[1]
     #   ]
     # metas_all[q][j] and dists_all[q][j] describe the same chunk. The loop below zips them and collapses chunks to entries.
+
+    rr = [None] * len(questions)
+    if reranker is not None:
+        # The cross-encoder needs chunk text; neither search path fetched it. Pull all 248 documents once and key them by
+        # (entry_id, chunk_index), which every metadata dict carries, so both the exact and ANN paths can look them up.
+        # Text stays in memory only: it is passed to the local model and never printed or written to the result file.
+
+        # Example:
+        # got = {
+        #     "metadatas": [
+        #         {"entry_id": "e017", "chunk_index": 0, ...}, 
+        #         {"entry_id": "e017", "chunk_index": 1, ...}, 
+        #         ...
+        #     ],
+        #     "documents": [
+        #         "text of e017 chunk 0...",
+        #         "text of e017 chunk 1...",
+        #         ...
+        #     ],
+        # }
+
+        got = col.get(include=["documents", "metadatas"])
+        # text_of = {
+        #     ("e017", 0): "text of e017 chunk 0...",
+        #     ("e017", 1): "text of e017 chunk 1...",
+        #     ("e042", 0): "text of e042 chunk 0...",
+        #     ...                                        # 248 keys
+        # }
+
+        text_of = {(m["entry_id"], m["chunk_index"]): doc for m, doc in zip(got["metadatas"], got["documents"])}
+        for i, q in enumerate(questions):
+            # rerank() wants best-first (meta, dense_dist, text) tuples, e.g. [(meta_A, 0.31, "text A..."), ...]
+
+        # questions = ["question 0 ...", "question 1 ..."]
+
+        # metas_all = [
+        #     [   # questions[0]
+        #         {"entry_id": "entry_042", "chunk_index": 1, "date": "2024-03-17"},
+        #         {"entry_id": "entry_007", "chunk_index": 0, "date": "2024-03-05"},
+        #         {"entry_id": "entry_042", "chunk_index": 0, "date": "2024-03-17"},
+        #     ],
+        #     [   # questions[1]
+        #         {"entry_id": "entry_090", "chunk_index": 0, "date": "2024-06-02"},
+        #         {"entry_id": "entry_042", "chunk_index": 1, "date": "2024-03-17"},
+        #     ],
+        # ]
+
+        # dists_all = [
+        #     [0.18, 0.31, 0.34],   # questions[0]
+        #     [0.22, 0.29],         # questions[1]
+        # ]
+
+        # # built once, before the loop, shared by every question
+        # text_of = {
+        #     ("entry_042", 0): "text 042-0...",
+        #     ("entry_042", 1): "text 042-1...",
+        #     ("entry_007", 0): "text 007-0...",
+        #     ("entry_090", 0): "text 090-0...",
+        #     ...
+        # }
+
+        # Result, still in dense order (closest first) and it is per question:
+        #   hits = [
+        #       ({"entry_id": "entry_042", "date": "2024-03-17", "title": ..., "chunk_index": 1,
+        #         "n_chunks": 2, "sources": "IMG_0412.jpg,IMG_0413.jpg"}, 0.18, "text of entry_042 chunk 1..."),
+        #       ({"entry_id": "entry_007", "chunk_index": 0, ...}, 0.31, "text of entry_007 chunk 0..."),
+        #       ({"entry_id": "entry_042", "chunk_index": 0, ...}, 0.34, "text of entry_042 chunk 0..."),
+        #   ]
+            hits = [(m, d, text_of[(m["entry_id"], m["chunk_index"])]) for m, d in zip(metas_all[i], dists_all[i])]
+        # Top rerank_depth reordered by score; the rest keep dense order after them (see rerank.py worked example)
+        #   entry_042 chunk 1 -> 1.4  |  entry_007 chunk 0 -> 6.2  |  entry_042 chunk 0 -> 3.7
+        # Sorted by score, highest first:
+        #   reordered = [
+        #       ({"entry_id": "entry_007", "chunk_index": 0, ...}, 0.31, "text of entry_007 chunk 0..."),
+        #       ({"entry_id": "entry_042", "chunk_index": 0, ...}, 0.34, "text of entry_042 chunk 0..."),
+        #       ({"entry_id": "entry_042", "date": "2024-03-17", "title": ..., "chunk_index": 1,
+        #         "n_chunks": 2, "sources": "IMG_0412.jpg,IMG_0413.jpg"}, 0.18, "text of entry_042 chunk 1..."),
+        #   ]                          # same (meta, dist, text) tuples as hits, only the order changed
+        #   scores  = [6.2, 3.7, 1.4]  # scores[j] belongs to reordered[j]; hits past rerank_depth would get None
+        #   n_trunc = 0                # (q, text) pairs over MAX_LENGTH tokens, cut short before scoring; a count, never text
+            reordered, scores, n_trunc = rerank(reranker, q, hits, rerank_depth)
+        # Unpacked back into parallel lists, text dropped:
+        #   metas_all[0] = [meta of entry_007 chunk 0, meta of entry_042 chunk 0, meta of entry_042 chunk 1]
+        #   dists_all[0] = [0.31, 0.34, 0.18]   # distances moved with their chunks, so no longer sorted
+        #   rr[0]        = {"top1_rerank_score": 6.2, "n_truncated": 0}
+            metas_all[i] = [m for m, _, _ in reordered]
+            dists_all[i] = [d for _, d, _ in reordered]
+            # scores[0] = cross-encoder logit of the new top chunk (higher = more relevant); the unanswerable check uses it
+            # n_truncated is a count, per question, of how many chunks were too long for the cross-encoder to read in full.
+            rr[i] = {"top1_rerank_score": scores[0], "n_truncated": n_trunc}
+
     ranked = []
     # This loop turns each question's ranked list of chunks into a ranked list of entries. The search returns chunks, but your eval labels are entry ids, and one entry can have several chunks. Without this step, one entry could fill several ranks and count more than once.
     for metas, dists in zip(metas_all, dists_all):
@@ -235,7 +334,7 @@ def retrieve(col, questions, model, query_prefix, date_filter=True, ann=False):
         for m, d in zip(metas, dists):
             seen.setdefault(m["entry_id"], d)
         ranked.append(list(seen.items()))
-    return ranked, windows
+    return ranked, windows, rr
 
 
 def score(relevant, ranked_ids):
@@ -296,7 +395,12 @@ def main():
     # dest="date_filter" with store_false means args.date_filter is True unless --no-date-filter is passed.
     ap.add_argument("--no-date-filter", dest="date_filter", action="store_false",
                     help="turn off the date filter (on by default) to get the unfiltered baseline")
+    ap.add_argument("--rerank", action="store_true", help="reorder top chunks with the local cross-encoder (retrieve/rerank.py)")
+    ap.add_argument("--rerank-depth", type=int, default=40, help="how many top chunks per question the cross-encoder scores")
     args = ap.parse_args()
+    # Reranking can only reorder chunks dense search returned, so depth past N_CHUNKS would silently do nothing extra
+    if args.rerank_depth > N_CHUNKS:
+        raise SystemExit(f"--rerank-depth {args.rerank_depth} > N_CHUNKS {N_CHUNKS}")
 
     # The manifest written at index-build time is the source of truth for model, prefix and chunk hash
     index_manifest = json.loads((CORPUS / f"index_manifest_{args.collection}.json").read_text())
@@ -314,11 +418,14 @@ def main():
     #   ]
     # windows, parallel to recs: None = no date filter applied, else (kind, n_dates_in_window), e.g.
     #   [None, ("month", 2)]  # recs[0] named no date; recs[1] named a month ("November 2024") with 2 indexed dates
-    ranked, windows = retrieve(col, [r["question"] for r in recs], index_manifest["model"], index_manifest["query_prefix"], args.date_filter, args.ann)
+    # Load before embedding so a missing pin / uncached model fails fast, before any Ollama work
+    reranker, rerank_info = load_reranker() if args.rerank else (None, {})
+    ranked, windows, rr = retrieve(col, [r["question"] for r in recs], index_manifest["model"], index_manifest["query_prefix"],
+                                   args.date_filter, args.ann, reranker, args.rerank_depth)
 
     # per_q holds one row per question; The other two hold only top-1 distances, split by question type.
     per_q, answerable_top1, unanswerable_top1 = [], [], []
-    for r, hits in zip(recs, ranked):
+    for r, hits, rq in zip(recs, ranked, rr):
         # r    = one eval record, e.g. {"qid": "q03", "type": "single", "question": "...", "relevant": ["entry_007"]}
         #        (unanswerable records have no "relevant" list)
         # hits = that question's ranked entries, e.g. [("entry_042", 0.18), ("entry_007", 0.31), ("entry_113", 0.35)]
@@ -341,6 +448,9 @@ def main():
             # Row example: {"qid": "q03", "type": "single", "n_relevant": 1, "top1_distance": 0.18, "mrr": 0.5, ...}
             # (**s merges the metric dict into the row)
             per_q.append({"qid": r["qid"], "type": r["type"], "n_relevant": len(r["relevant"]), "top1_distance": hits[0][1], **s})
+        # With --rerank, add {"top1_rerank_score", "n_truncated"} to the row just appended (either branch)
+        if rq:
+            per_q[-1].update(rq)
 
     # Group answerable rows by question type (e.g. single vs multi-entry) for the per-type table
     # Unanswerable questions have no gold entry, so recall/MRR are undefined for them; they're only used for distances below
@@ -398,6 +508,46 @@ def main():
     print("\nunanswerable vs answerable top-1 cosine distance (lower = more confident)")
     print(f"  unanswerable  min={min(unanswerable_top1):.3f}  median={statistics.median(unanswerable_top1):.3f}  n={len(unanswerable_top1)}")
     print(f"  answerable    median={statistics.median(answerable_top1):.3f}  p90={sorted(answerable_top1)[int(.9 * len(answerable_top1))]:.3f}")
+    if args.rerank:
+        # Same question with the cross-encoder's top-1 logit; the direction flips (higher = more confident), so compare
+        # unanswerable MAX against answerable p10: if unanswerable max < answerable p10, a score cutoff separates them.
+        # Top-1 dense distance above is no longer the top-1 by the final order's score, so this is the one to read.
+
+        # per_q = [
+        #     {"qid": "q01", "type": "single",       "top1_rerank_score":  6.4, "n_truncated": 0},
+        #     {"qid": "q02", "type": "single",       "top1_rerank_score":  0.9, "n_truncated": 0},
+        #     {"qid": "q03", "type": "multi",        "top1_rerank_score":  5.1, "n_truncated": 0},
+        #     {"qid": "q04", "type": "date",         "top1_rerank_score":  7.3, "n_truncated": 2},
+        #     {"qid": "q05", "type": "single",       "top1_rerank_score":  4.0, "n_truncated": 0},
+        #     {"qid": "q06", "type": "unanswerable", "top1_rerank_score": -3.4, "n_truncated": 0},
+        #     {"qid": "q07", "type": "unanswerable", "top1_rerank_score": -1.2, "n_truncated": 1},
+        #     {"qid": "q08", "type": "unanswerable", "top1_rerank_score": -5.0, "n_truncated": 0},
+        # ]
+
+        # ua = [-3.4, -1.2, -5.0]
+
+        ua = [p["top1_rerank_score"] for p in per_q if p["type"] == "unanswerable"]
+
+        # an = [0.9, 4.0, 5.1, 6.4, 7.3]
+
+        an = sorted(p["top1_rerank_score"] for p in answerable)
+        print("unanswerable vs answerable top-1 rerank score (higher = more confident)")
+        # max(ua) = −1.2, the highest score any no-answer question got.
+        # statistics.median(ua): sorted, the list is [−5.0, −3.4, −1.2], so the middle value is −3.4.
+        # len(ua) = 3.
+        # :.3f prints 3 decimal places.
+        print(f"  unanswerable  max={max(ua):.3f}  median={statistics.median(ua):.3f}  n={len(ua)}")
+        # statistics.median(an): the middle of [0.9, 4.0, 5.1, 6.4, 7.3] is 5.1.
+        # p10, step by step:
+        # len(an) = 5
+        # .1 * 5 = 0.5
+        # int(0.5) = 0 (int drops the decimal part)
+        # an[0] = 0.9
+        print(f"  answerable    median={statistics.median(an):.3f}  p10={an[int(.1 * len(an))]:.3f}")
+        # Pairs over MAX_LENGTH were truncated by the model; any nonzero count means some scores saw a cut chunk
+        trunc = {p["qid"]: p["n_truncated"] for p in per_q if p["n_truncated"]}
+        print(f"  questions with over-budget (truncated) pairs ({len(trunc)}): "
+              + (", ".join(f"{q}({n})" for q, n in trunc.items()) or "-"))
 
     # Date-filter audit (ids and counts only). Date gold is "every entry on that day/month", so a correct parse makes date
     # questions near-trivial: this measures parser coverage, not retrieval. The check that matters is no false fires elsewhere.
@@ -426,7 +576,8 @@ def main():
     out_dir.mkdir(exist_ok=True)
     # UTC timestamp in the filename: every run is kept, nothing is overwritten
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    suffix = ("__ann" if args.ann else "") + ("__nodatefilter" if not args.date_filter else "")  # the default (filtered) run has no suffix; the unfiltered baseline is marked
+    suffix = (("__ann" if args.ann else "") + ("__nodatefilter" if not args.date_filter else "")  # the default (filtered) run has no suffix; the unfiltered baseline is marked
+              + (f"__rerank{args.rerank_depth}" if args.rerank else ""))  # e.g. __rerank40
     out = out_dir / f"{args.collection}__eval-{args.eval_version}{suffix}__{stamp}.json"
     # Hashes + embedder digest pin exactly what was scored, so two result files are only comparable if these match
     # Example file: results/nomic-embed-text_chunks_v1__eval-v1__20261028T143005Z.json
@@ -443,6 +594,8 @@ def main():
         "embed_model": index_manifest["model"], "embed_model_digest": index_manifest["model_digest"],
         "query_prefix": index_manifest["query_prefix"], "eval_sha256": eval_man["sha256"],
         "chunks_sha256": index_manifest["chunks_sha256"], "ks": KS,
+        # Reranker model + pinned revision + device + max_length: two rerank runs are comparable only if these match
+        "rerank": args.rerank, "rerank_depth": args.rerank_depth if args.rerank else None, **rerank_info,
         "macro": macro, "by_type": {t: {c: mean(rows, c) for c in cols} for t, rows in by_type.items()},
         "per_question": per_q, "date_filter_fired": {q: {"kind": k, "n_dates": n} for q, (k, n) in fired.items()},
     }, indent=2))
