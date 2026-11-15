@@ -33,7 +33,7 @@ DEFAULT_MODEL = "BAAI/bge-reranker-v2-m3"
 # Pinned weights, so a run next month scores with the same model. Filled from the --download output.
 # A model missing here is refused rather than loaded at whatever revision happens to be cached.
 PINNED_REVISIONS = {
-    # "BAAI/bge-reranker-v2-m3": "<commit hash printed by --download>",
+    "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",  # pinned 2026-11-13
 }
 # Token budget per (question, chunk) pair. Longest chunk is ~2000 chars (chunks_manifest_v1), roughly 500-800 tokens
 # with the XLM-R tokenizer; 1024 leaves room for the question. Pairs over budget are counted, never silently cut.
